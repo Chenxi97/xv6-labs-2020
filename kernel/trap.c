@@ -68,9 +68,17 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    if(r_scause() == 13 || r_scause() == 15){
+      // page fault
+      if(page_fault_handler()<0)
+        p->killed=1;
+    }else{
+      p->killed = 1;
+    }
+    if(p->killed){
+      printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+    }
   }
 
   if(p->killed)
@@ -81,6 +89,31 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+int
+page_fault_handler()
+{
+  struct proc *p=myproc();
+  uint64 va=PGROUNDDOWN(r_stval());
+  char *mem;
+
+  // kill process if va out of range.
+  if(va>=p->sz || va<p->trapframe->sp){
+    return -1;
+  }
+
+  if((mem=kalloc())==0){
+    return -1;
+  }
+  memset(mem,0,PGSIZE);
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    kfree(mem);
+    return -1;
+  }
+  // printf("alloc %p\n",(uint64)mem);
+  // vmprint(p->pagetable);
+  return 0;
 }
 
 //
