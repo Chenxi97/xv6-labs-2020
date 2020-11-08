@@ -47,8 +47,10 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
-  if(growproc(n) < 0)
-    return -1;
+  // if(growproc(n) < 0)
+  //   return -1;
+  myproc()->sz+=n;
+  printf("sys_sbrk: old %d, new %d\n",addr,n);
   return addr;
 }
 
