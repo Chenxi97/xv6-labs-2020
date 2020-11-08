@@ -67,6 +67,19 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+    if(which_dev==2&&p->alarm_interval>0){
+      // tick alarm if this is a timer interrupt.
+      if(++p->ticks_pass >= p->alarm_interval){
+        if(p->alarm_running==0){
+          // save trapframe registers.
+          memmove((void *)(p->saved_trapframe), (void *)(p->trapframe), PGSIZE);
+          // jump to alarm handler when return to user space.
+          p->trapframe->epc=p->alarm_handler;
+          p->alarm_running=1;
+        }
+        p->ticks_pass=0;
+      }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
