@@ -13,7 +13,7 @@ extern char trampoline[], uservec[], userret[];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
-int cow_handler();
+int cow_handler(pagetable_t,uint64);
 
 extern int devintr();
 
@@ -70,7 +70,7 @@ usertrap(void)
     // ok
   }else if(r_scause()==15){
     // fault when writing page, maybe cow fault.
-    if(cow_handler()!=0){
+    if(cow_handler(p->pagetable,r_stval())!=0){
       p->killed=1;
     }
   } else {
@@ -92,16 +92,14 @@ usertrap(void)
 // return 0 if cow fault handled,
 // or -1 if process should be killed.
 int
-cow_handler()
+cow_handler(pagetable_t pagetable, uint64 va)
 {
-  uint64 va,pa;
+  uint64 pa;
   pte_t *pte;
   char *mem;
   uint flags;
-  struct proc *p=myproc();
 
-  va=r_stval();
-  pte=walk(p->pagetable, va, 0);
+  pte=walk(pagetable, va, 0);
   if(pte==0)
     return -1;
   if((*pte&PTE_V)==0)
