@@ -29,18 +29,6 @@ add_ref(uint64 pa)
   release(&ref.lock);
 }
 
-uint32
-sub_ref(uint64 pa)
-{
-  uint32 res;
-  acquire(&ref.lock);
-  if(ref.count[PA2IDX(pa)]==0)
-    panic("sub_ref");
-  res = --ref.count[PA2IDX(pa)];
-  release(&ref.lock);
-  return res;
-}
-
 struct run {
   struct run *next;
 };
@@ -55,8 +43,6 @@ kinit()
 {
   initlock(&kmem.lock, "kmem");
   initlock(&ref.lock,"ref");
-  for(uint32 i=0;i<PA2IDX(PHYSTOP);i++)
-    ref.count[i]=1;
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -65,8 +51,10 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
+    ref.count[PA2IDX(p)]=1;
     kfree(p);
+  }
 }
 
 // Free the page of physical memory pointed at by v,
@@ -77,11 +65,17 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  uint32 paref;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
   
-  if(sub_ref((uint64)pa)>0)
+  acquire(&ref.lock);
+  if(ref.count[PA2IDX(pa)]==0)
+    panic("kfree: ref is 0");
+  paref = --ref.count[PA2IDX(pa)];
+  release(&ref.lock);
+  if(paref>0)
     return;
 
   // Fill with junk to catch dangling refs.
