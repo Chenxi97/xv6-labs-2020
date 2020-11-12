@@ -24,13 +24,13 @@
 #include "buf.h"
 
 struct {
-  struct spinlock lock;
+  struct spinlock lock[HTSIZE];
   struct buf buf[NBUF];
 
   // Linked list of all buffers, through prev/next.
   // Sorted by how recently the buffer was used.
   // head.next is most recent, head.prev is least.
-  struct buf head;
+  struct buf head[HTSIZE];
 } bcache;
 
 void
@@ -38,17 +38,19 @@ binit(void)
 {
   struct buf *b;
 
-  initlock(&bcache.lock, "bcache");
-
-  // Create linked list of buffers
-  bcache.head.prev = &bcache.head;
-  bcache.head.next = &bcache.head;
+  for(int i=0;i<HTSIZE;i++){
+    initlock(&bcache.lock[i], "bcache.bucket");
+    // Create linked list of buffers
+    bcache.head[i].prev = &bcache.head[i];
+    bcache.head[i].next = &bcache.head[i];
+  }
+  
   for(b = bcache.buf; b < bcache.buf+NBUF; b++){
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
+    b->next = bcache.head[0].next;
+    b->prev = &bcache.head[0];
     initsleeplock(&b->lock, "buffer");
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    bcache.head[0].next->prev = b;
+    bcache.head[0].next = b;
   }
 }
 
@@ -59,14 +61,15 @@ static struct buf*
 bget(uint dev, uint blockno)
 {
   struct buf *b;
+  int buck=blockno%HTSIZE;
 
-  acquire(&bcache.lock);
+  acquire(&bcache.lock[buck]);
 
   // Is the block already cached?
-  for(b = bcache.head.next; b != &bcache.head; b = b->next){
+  for(b = bcache.head[buck].next; b != &bcache.head[buck]; b = b->next){
     if(b->dev == dev && b->blockno == blockno){
       b->refcnt++;
-      release(&bcache.lock);
+      release(&bcache.lock[buck]);
       acquiresleep(&b->lock);
       return b;
     }
@@ -74,17 +77,37 @@ bget(uint dev, uint blockno)
 
   // Not cached.
   // Recycle the least recently used (LRU) unused buffer.
-  for(b = bcache.head.prev; b != &bcache.head; b = b->prev){
-    if(b->refcnt == 0) {
-      b->dev = dev;
-      b->blockno = blockno;
-      b->valid = 0;
-      b->refcnt = 1;
-      release(&bcache.lock);
-      acquiresleep(&b->lock);
-      return b;
+  // search form current bucket.
+  int newbuck=buck;
+  do{
+    if(newbuck!=buck)
+      acquire(&bcache.lock[newbuck]);
+    for(b = bcache.head[newbuck].prev; b != &bcache.head[newbuck]; b = b->prev){
+      if(b->refcnt == 0) {
+        // delete from original bucket
+        b->next->prev=b->prev;
+        b->prev->next=b->next;
+        if(newbuck!=buck)
+          release(&bcache.lock[newbuck]);
+        // insert into current bucket
+        b->next = bcache.head[buck].next;
+        b->prev = &bcache.head[buck];
+        bcache.head[buck].next->prev = b;
+        bcache.head[buck].next = b;
+        // initailize b
+        b->dev = dev;
+        b->blockno = blockno;
+        b->valid = 0;
+        b->refcnt = 1;
+        release(&bcache.lock[buck]);
+        acquiresleep(&b->lock);
+        return b;
+      }
     }
-  }
+    if(newbuck!=buck)
+      release(&bcache.lock[newbuck]);
+    newbuck=(newbuck+1)%HTSIZE;
+  } while(newbuck!=buck);
   panic("bget: no buffers");
 }
 
@@ -121,33 +144,36 @@ brelse(struct buf *b)
 
   releasesleep(&b->lock);
 
-  acquire(&bcache.lock);
+  int buck=b->blockno%HTSIZE;
+  acquire(&bcache.lock[buck]);
   b->refcnt--;
   if (b->refcnt == 0) {
     // no one is waiting for it.
     b->next->prev = b->prev;
     b->prev->next = b->next;
-    b->next = bcache.head.next;
-    b->prev = &bcache.head;
-    bcache.head.next->prev = b;
-    bcache.head.next = b;
+    b->next = bcache.head[buck].next;
+    b->prev = &bcache.head[buck];
+    bcache.head[buck].next->prev = b;
+    bcache.head[buck].next = b;
   }
   
-  release(&bcache.lock);
+  release(&bcache.lock[buck]);
 }
 
 void
 bpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int buck=b->blockno%HTSIZE;
+  acquire(&bcache.lock[buck]);
   b->refcnt++;
-  release(&bcache.lock);
+  release(&bcache.lock[buck]);
 }
 
 void
 bunpin(struct buf *b) {
-  acquire(&bcache.lock);
+  int buck=b->blockno%HTSIZE;
+  acquire(&bcache.lock[buck]);
   b->refcnt--;
-  release(&bcache.lock);
+  release(&bcache.lock[buck]);
 }
 
 
