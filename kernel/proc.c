@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct cpu cpus[NCPU];
 
@@ -133,6 +134,8 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+
+  p->vmastart=MAXVA-2*PGSIZE;
 
   return p;
 }
@@ -282,6 +285,13 @@ fork(void)
   }
   np->sz = p->sz;
 
+  // copy vma table.
+  for(int i=0;i<NVMA;i++){
+    np->vma[i]=p->vma[i];
+    if(p->vma[i].length)
+      np->vma[i].file=filedup(p->vma[i].file);
+  }
+
   np->parent = p;
 
   // copy saved user registers.
@@ -340,9 +350,24 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  struct vma *v;
 
   if(p == initproc)
     panic("init exiting");
+
+  // empty vma
+  for(v=p->vma;v<p->vma+NVMA;v++){
+    if(v->length){
+      if(v->flags==MAP_SHARED){
+        // store modifies
+        filewrite(v->file,v->address,v->length);
+      }
+      // unmap
+      uvmunmap(p->pagetable,v->address,v->length/PGSIZE,1);
+      fileclose(v->file);
+      p->vmastart=MAXVA-2*PGSIZE;
+    }
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

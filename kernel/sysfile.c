@@ -484,3 +484,82 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  uint64 addr;
+  int length,prot,flags,offset;
+  struct file *f;
+  struct vma *v;
+  struct proc *p=myproc();
+
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0 || argint(2, &prot) < 0  || 
+      argint(3, &flags) < 0 || argfd(4, 0, &f) < 0|| argint(5, &offset) < 0)
+    return -1;
+  // check permissions
+  if(f->readable==1 && f->writable==0 && prot==3 && flags==MAP_SHARED)
+    return -1;
+  // alloc a vma
+  for(v=p->vma;v<p->vma+NVMA;v++){
+    if(v->length==0)
+      break;
+  }
+  if(v->length)
+    panic("sys_mmap: vma");
+  // alloc user address space
+  length=PGROUNDUP(length);
+  v->length=length;
+  p->vmastart-=length;
+  v->address=p->vmastart;
+  // store flags
+  v->permissions=prot;
+  v->flags=flags;
+  // increase file reference
+  v->file=filedup(f);
+  return v->address;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr,end;
+  int length,flag=1;
+  struct vma *v;
+  struct proc *p=myproc();
+
+  if (argaddr(0, &addr) < 0 || argint(1, &length) < 0)
+    return -1;
+  if(length<=0)
+    return -1;
+  for(v=p->vma;v<p->vma+NVMA;v++){
+    if(addr>=v->address&&addr<v->address+v->length){
+      flag=0;
+      break;
+    }
+  }
+  if(flag)
+    return -1;
+  end=PGROUNDDOWN(addr+length);
+  addr=PGROUNDUP(addr);
+  length=end-addr;
+  if(v->flags==MAP_SHARED){
+    // store modifies
+    filewrite(v->file,addr,length);
+  }
+  // unmap
+  uvmunmap(p->pagetable,addr,length/PGSIZE,1);
+  // update vma
+  v->length-=length;
+  if(v->address==addr){
+    if(v->address==p->vmastart)
+      p->vmastart=addr+length;
+    v->address=addr+length;
+  }
+  // remove vma
+  if(v->length==0){
+    // dereference file
+    fileclose(v->file);
+  }
+  return 0;
+}

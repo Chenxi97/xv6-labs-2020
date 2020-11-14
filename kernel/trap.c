@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -13,6 +17,8 @@ extern char trampoline[], uservec[], userret[];
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
+
+int mmap_handler();
 
 extern int devintr();
 
@@ -67,6 +73,9 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  }else if(mmap_handler()==0){
+    // mmap alloc success
+    printf("mmap alloc\n");
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -81,6 +90,45 @@ usertrap(void)
     yield();
 
   usertrapret();
+}
+
+int
+mmap_handler()
+{
+  struct proc *p = myproc();
+  struct vma *v;
+  uint64 va=r_stval();
+  int flag=1;
+  char *mem;
+
+  if(r_scause()!=13&&r_scause()!=15)
+    return -1;
+  for(v=p->vma;v<p->vma+NVMA;v++){
+    if(va>=v->address&&va<v->address+v->length){
+      flag=0;
+      break;
+    }
+  }
+  if(flag)
+    return -1;
+  if(r_scause()==13&&(v->permissions&PROT_READ)==0)
+    return -1;
+  if(r_scause()==15&&(v->permissions&PROT_WRITE)==0)
+    return -1;
+  // alloc physical memory
+  if((mem=kalloc())==0)
+    return -1;
+  memset(mem, 0, PGSIZE);
+  if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, (v->permissions<<1)|PTE_U) != 0){
+    kfree(mem);
+    return -1;
+  }
+  // read file
+  ilock(v->file->ip);
+  if(readi(v->file->ip, 0, (uint64)mem, va-v->address, PGSIZE) == 0)
+    return -1;
+  iunlock(v->file->ip);
+  return 0;
 }
 
 //
